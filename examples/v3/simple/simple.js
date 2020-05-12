@@ -1,6 +1,7 @@
 const fetch = require('node-fetch');
 const { resolve } = require('path');
 const { MatchersV3, PactV3 } = require('@pact-foundation/pact/v3');
+const chai = require("chai")
 
 const {
   string,
@@ -10,6 +11,8 @@ const {
   atLeastOneLike,
   timestamp
 } = MatchersV3
+
+const expect = chai.expect
 
 const provider = new PactV3({
   consumer: 'ClinCheck',
@@ -22,12 +25,14 @@ describe('Pact with IDS', () => {
 
   describe('getInfo', () => {
     beforeEach(() => {
-      provider.withRequest({
-         method: 'GET',
-         path: '/path',
-         query: { from: "today" }
-         //headers: { Accept: "application/json" }
-      }).willRespondWith({
+      provider
+        .uponReceiving("a request for projects")
+        .withRequest({
+          method: 'POST',
+          path: '/path',
+          query: { from: "today" }
+          //headers: { Accept: "application/json" }
+        }).willRespondWith({
           status: 200,
           headers: { "Content-Type": "application/json" },
           body: eachLike({
@@ -50,23 +55,15 @@ describe('Pact with IDS', () => {
     });
 
     it('request to IDS', async () => {
-      const result = provider.executeTest( async (mockserver) => {
-        const res = await fetch( mockserver.url + '/path?from=today'/*, {
-          headers: {
-            Accept: "application/json"
-          }
-        }*/);
-        //const json = await res.json();
-        console.log(res);
-
-        return res;
-      });
+      const result = provider.executeTest(
+        async (mockserver) => fetch( mockserver.url + '/path?from=today', {method: 'POST'})
+      );
       try {
         const res = await result;
+        expect(res.status).to.be.equal(200);
       } catch(e) {
         console.log('Error:', e)
       }
-      expect(result).toBeDefined();
     });
   });
 
