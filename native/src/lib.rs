@@ -8,17 +8,18 @@
 use neon::prelude::*;
 use pact_matching::models::*;
 use pact_matching::models::provider_states::ProviderState;
-use pact_matching::models::json_utils::json_to_string;
 use pact_matching::models::matchingrules::{MatchingRules, MatchingRule, Category, RuleLogic};
 use pact_matching::models::generators::{Generators, GeneratorCategory, Generator};
 use pact_matching::time_utils::generate_string;
 use pact_mock_server::server_manager::ServerManager;
+use pact_mock_server_ffi::bodies::process_json;
 use env_logger::{Builder, Target};
 use uuid::Uuid;
 use std::sync::Mutex;
 use serde_json::Value;
-use serde_json::map::Map;
 use log::*;
+use std::collections::HashMap;
+use std::fs;
 
 mod verify;
 mod xml;
@@ -36,79 +37,6 @@ fn init(mut cx: FunctionContext) -> JsResult<JsString> {
     debug!("Initialising Pact native library version {}", env!("CARGO_PKG_VERSION"));
 
     Ok(cx.string(env!("CARGO_PKG_VERSION")))
-}
-
-#[deprecated(
-  since = "0.0.2",
-  note = "Moved to Pact-Rust FFI crate"
-)]
-fn process_array(array: &Vec<Value>, matching_rules: &mut Category, generators: &mut Generators, path: &String, type_matcher: bool) -> Value {
-  Value::Array(array.iter().enumerate().map(|(index, val)| {
-    let updated_path = if type_matcher {
-      path.to_owned() + "[*]"
-    } else {
-      path.to_owned() + "[" + &index.to_string() + "]"
-    };
-    match val {
-      Value::Object(ref map) => process_object(map, matching_rules, generators, &updated_path, false),
-      Value::Array(ref array) => process_array(array, matching_rules, generators, &updated_path, false),
-      _ => val.clone()
-    }
-  }).collect())
-}
-
-#[deprecated(
-  since = "0.0.2",
-  note = "Moved to Pact-Rust FFI crate"
-)]
-fn process_object(obj: &Map<String, Value>, matching_rules: &mut Category, generators: &mut Generators, path: &String, type_matcher: bool) -> Value {
-  if obj.contains_key("pact:matcher:type") {
-    if let Some(rule) = MatchingRule::from_integration_json(obj) {
-      matching_rules.add_rule(path, rule, &RuleLogic::And);
-    }
-    if let Some(gen) = obj.get("pact:generator:type") {
-      match Generator::from_map(&json_to_string(gen), obj) {
-        Some(generator) => generators.add_generator_with_subcategory(&GeneratorCategory::BODY, path, generator),
-        _ => ()
-      };
-    }
-    match obj.get("value") {
-      Some(val) => match val {
-        Value::Object(ref map) => process_object(map, matching_rules, generators, path, true),
-        Value::Array(array) => process_array(array, matching_rules, generators, path, true),
-        _ => val.clone()
-      },
-      None => Value::Null
-    }
-  } else {
-    Value::Object(obj.iter().map(|(key, val)| {
-      let updated_path = if type_matcher {
-        path.to_owned() + ".*"
-      } else {
-        path.to_owned() + "." + key
-      };
-      (key.clone(), match val {
-        Value::Object(ref map) => process_object(map, matching_rules, generators, &updated_path, false),
-        Value::Array(ref array) => process_array(array, matching_rules, generators, &updated_path, false),
-        _ => val.clone()
-      })
-    }).collect())
-  }
-}
-
-#[deprecated(
-  since = "0.0.2",
-  note = "Moved to Pact-Rust FFI crate"
-)]
-fn process_json(body: String, matching_rules: &mut Category, generators: &mut Generators) -> String {
-  match serde_json::from_str(&body) {
-    Ok(json) => match json {
-      Value::Object(ref map) => process_object(map, matching_rules, generators, &"$".to_string(), false).to_string(),
-      Value::Array(ref array) => process_array(array, matching_rules, generators, &"$".to_string(), false).to_string(),
-      _ => body
-    },
-    Err(_) => body
-  }
 }
 
 fn process_xml(body: String, matching_rules: &mut Category, generators: &mut Generators) -> Result<Vec<u8>, String> {
@@ -175,6 +103,81 @@ fn generate_datetime_string(mut cx: FunctionContext) -> JsResult<JsString> {
     Ok(value) => Ok(cx.string(value)),
     Err(err) => cx.throw_error(err)
   }
+}
+
+fn get_request_path(cx: &mut CallContext<JsPact>, request: Handle<JsObject>) -> Option<(String, Option<MatchingRule>, Option<Generator>)> {
+  let js_path = request.get(cx, "path");
+  match js_path {
+    Ok(path) => match path.downcast::<JsString>() {
+      Ok(path) => Some((path.value().to_string(), None, None)),
+      Err(err) => {
+        match path.downcast::<JsObject>() {
+          Ok(path) => {
+            let prop_val = path.get(cx, "value").unwrap();
+            match prop_val.downcast::<JsString>() {
+              Ok(val) => {
+                let rule = matching_rule_from_js_object(path, cx);
+                let gen = generator_from_js_object(path, cx);
+                Some((val.value(), rule, gen))
+              },
+              Err(err2) => {
+                warn!("Request path matcher must contain a string value - {}, {}", err, err2);
+                None
+              }
+            }
+          },
+          Err(err2) => {
+            warn!("Request path is not a string value or a matcher - {}, {}", err, err2);
+            None
+          }
+        }
+      }
+    },
+    _ => None
+  }
+}
+
+fn get_query(cx: &mut CallContext<JsPact>, request: Handle<JsObject>) -> NeonResult<HashMap<String, Vec<String>>> {
+  let js_query = request.get(cx, "query");
+  js_query.map(|val| {
+    let mut map = hashmap!{};
+    if let Ok(query_map) = val.downcast::<JsObject>() {
+      let props = query_map.get_own_property_names(cx).unwrap();
+      for prop in props.to_vec(cx).unwrap() {
+        let prop_name = prop.downcast::<JsString>().unwrap().value();
+        let prop_val = query_map.get(cx, prop_name.as_str()).unwrap();
+        if let Ok(array) = prop_val.downcast::<JsArray>() {
+          let vec = array.to_vec(cx).unwrap();
+          map.insert(prop_name, vec.iter().map(|item| {
+            item.downcast::<JsString>().unwrap().value()
+          }).collect());
+        } else {
+          map.insert(prop_name, vec![prop_val.downcast::<JsString>().unwrap().value()]);
+        }
+      }
+    }
+    map
+  })
+}
+
+fn get_headers(cx: &mut CallContext<JsPact>, obj: Handle<JsObject>) -> NeonResult<HashMap<String, Vec<String>>> {
+  let js_headers = obj.get(cx, "headers");
+  js_headers.map(|val| {
+    let mut map = hashmap!{};
+    if let Ok(header_map) = val.downcast::<JsObject>() {
+      let props = header_map.get_own_property_names(cx).unwrap();
+      for prop in props.to_vec(cx).unwrap() {
+        let prop_name = prop.downcast::<JsString>().unwrap().value();
+        let prop_val = header_map.get(cx, prop_name.as_str()).unwrap();
+        map.insert(prop_name, vec![prop_val.downcast::<JsString>().unwrap().value()]);
+      }
+    }
+    map
+  })
+}
+
+fn load_file(file_path: &String) -> Result<OptionalBody, std::io::Error> {
+  fs::read(file_path).map(|data| OptionalBody::Present(data))
 }
 
 declare_types! {
@@ -249,69 +252,9 @@ declare_types! {
       let request = cx.argument::<JsObject>(0)?;
 
       let js_method = request.get(&mut cx, "method");
-      let js_path = request.get(&mut cx, "path");
-      let path = match js_path {
-        Ok(path) => match path.downcast::<JsString>() {
-          Ok(path) => Some((path.value().to_string(), None, None)),
-          Err(err) => {
-            match path.downcast::<JsObject>() {
-              Ok(path) => {
-                let prop_val = path.get(&mut cx, "value").unwrap();
-                match prop_val.downcast::<JsString>() {
-                  Ok(val) => {
-                    let rule = matching_rule_from_js_object(path, &mut cx);
-                    let gen = generator_from_js_object(path, &mut cx);
-                    Some((val.value(), rule, gen))
-                  },
-                  Err(err2) => {
-                    warn!("Request path matcher must contain a string value - {}, {}", err, err2);
-                    None
-                  }
-                }
-              },
-              Err(err2) => {
-                warn!("Request path is not a string value or a matcher - {}, {}", err, err2);
-                None
-              }
-            }
-          }
-        },
-        _ => None
-      };
-
-      let js_query = request.get(&mut cx, "query");
-      let js_query_props = js_query.map(|val| {
-        let mut map = hashmap!{};
-        if let Ok(query_map) = val.downcast::<JsObject>() {
-          let props = query_map.get_own_property_names(&mut cx).unwrap();
-          for prop in props.to_vec(&mut cx).unwrap() {
-            let prop_name = prop.downcast::<JsString>().unwrap().value();
-            let prop_val = query_map.get(&mut cx, prop_name.as_str()).unwrap();
-            if let Ok(array) = prop_val.downcast::<JsArray>() {
-              let vec = array.to_vec(&mut cx).unwrap();
-              map.insert(prop_name, vec.iter().map(|item| {
-                item.downcast::<JsString>().unwrap().value()
-              }).collect());
-            } else {
-              map.insert(prop_name, vec![prop_val.downcast::<JsString>().unwrap().value()]);
-            }
-          }
-        }
-        map
-      });
-      let js_headers = request.get(&mut cx, "headers");
-      let js_header_props = js_headers.map(|val| {
-        let mut map = hashmap!{};
-        if let Ok(header_map) = val.downcast::<JsObject>() {
-          let props = header_map.get_own_property_names(&mut cx).unwrap();
-          for prop in props.to_vec(&mut cx).unwrap() {
-            let prop_name = prop.downcast::<JsString>().unwrap().value();
-            let prop_val = header_map.get(&mut cx, prop_name.as_str()).unwrap();
-            map.insert(prop_name, vec![prop_val.downcast::<JsString>().unwrap().value()]);
-          }
-        }
-        map
-      });
+      let path = get_request_path(&mut cx, request);
+      let js_query_props = get_query(&mut cx, request);
+      let js_header_props = get_headers(&mut cx, request);
       let js_body = match cx.argument::<JsValue>(1) {
         Ok(body) => body.downcast::<JsString>().map(|val| val.value()).ok(),
         Err(_) => None
@@ -319,9 +262,10 @@ declare_types! {
 
       let mut this = cx.this();
 
-      {
+      let result = {
         let guard = cx.lock();
         let mut pact = this.borrow_mut(&guard);
+
         if let Some(last) = pact.interactions.last_mut() {
           if let Ok(method) = js_method {
             match method.downcast::<JsString>() {
@@ -354,28 +298,102 @@ declare_types! {
               Err(err) => panic!(err)
             }
           }
+          Ok(())
+        } else if pact.interactions.is_empty() {
+          Err("You need to define a new interaction with the uponReceiving method before you can define a new request with the withRequest method")
+        } else {
+          Ok(())
         }
-      }
+      };
 
-      Ok(cx.undefined().upcast())
+      match result {
+        Ok(_) => Ok(cx.undefined().upcast()),
+        Err(message) => cx.throw_error(message)
+      }
+    }
+
+    method addRequestBinaryFile(mut cx) {
+      let request = cx.argument::<JsObject>(0)?;
+      let content_type = cx.argument::<JsString>(1)?;
+      let file_path = cx.argument::<JsString>(2)?;
+
+      let js_method = request.get(&mut cx, "method");
+      let path = get_request_path(&mut cx, request);
+      let js_query_props = get_query(&mut cx, request);
+      let js_header_props = get_headers(&mut cx, request);
+
+      let mut this = cx.this();
+
+      let result = {
+        let guard = cx.lock();
+        let mut pact = this.borrow_mut(&guard);
+
+        if let Some(last) = pact.interactions.last_mut() {
+          if let Ok(method) = js_method {
+            match method.downcast::<JsString>() {
+              Ok(method) => last.request.method = method.value().to_string(),
+              Err(err) => if !method.is_a::<JsUndefined>() && !method.is_a::<JsNull>() {
+                warn!("Request method is not a string value - {}", err)
+              }
+            }
+          }
+          if let Some((path, rule, gen)) = path {
+            last.request.path = path;
+            if let Some(rule) = rule {
+              let category = last.request.matching_rules.add_category("path");
+              category.add_rule(&"".to_string(), rule, &RuleLogic::And)
+            }
+            if let Some(gen) = gen {
+              last.request.generators.add_generator(&GeneratorCategory::PATH, gen)
+            }
+          }
+
+          if let Ok(query_props) = js_query_props {
+            last.request.query = Some(query_props)
+          }
+
+          if let Ok(header_props) = js_header_props {
+            last.request.headers = Some(header_props)
+          }
+
+          match load_file(&file_path.value()) {
+            Ok(body) => {
+              last.request.body = body;
+              last.request.matching_rules.add_category("body").add_rule("$", MatchingRule::ContentType(content_type.value()), &RuleLogic::And);
+              if !last.request.has_header(&"Content-Type".to_string()) {
+                match last.request.headers {
+                  Some(ref mut headers) => {
+                    headers.insert("Content-Type".to_string(), vec!["application/octet-stream".to_string()]);
+                  },
+                  None => {
+                    last.request.headers = Some(hashmap! { "Content-Type".to_string() => vec!["application/octet-stream".to_string()]});
+                  }
+                }
+              }
+              Ok(())
+            },
+            Err(err) => {
+              error!("Could not load file {}: {}", file_path.value(), err);
+              Err(format!("Could not load file {}: {}", file_path.value(), err))
+            }
+          }
+        } else if pact.interactions.is_empty() {
+          Err("You need to define a new interaction with the uponReceiving method before you can define a new request with the withRequestBinaryFile method".to_string())
+        } else {
+          Ok(())
+        }
+      };
+
+      match result {
+        Ok(_) => Ok(cx.undefined().upcast()),
+        Err(message) => cx.throw_error(message)
+      }
     }
 
     method addResponse(mut cx) {
       let response = cx.argument::<JsObject>(0)?;
       let js_status = response.get(&mut cx, "status");
-      let js_headers = response.get(&mut cx, "headers");
-      let js_header_props = js_headers.map(|val| {
-        let mut map = hashmap!{};
-        if let Ok(header_map) = val.downcast::<JsObject>() {
-          let props = header_map.get_own_property_names(&mut cx).unwrap();
-          for prop in props.to_vec(&mut cx).unwrap() {
-            let prop_name = prop.downcast::<JsString>().unwrap().value();
-            let prop_val = header_map.get(&mut cx, prop_name.as_str()).unwrap();
-            map.insert(prop_name, vec![prop_val.downcast::<JsString>().unwrap().value()]);
-          }
-        }
-        map
-      });
+      let js_header_props = get_headers(&mut cx, response);
       let js_body = match cx.argument::<JsValue>(1) {
         Ok(body) => body.downcast::<JsString>().map(|val| val.value()).ok(),
         Err(_) => None
@@ -383,31 +401,98 @@ declare_types! {
 
       let mut this = cx.this();
 
-      {
+      let result = {
         let guard = cx.lock();
         let mut pact = this.borrow_mut(&guard);
         if let Some(last) = pact.interactions.last_mut() {
-            if let Ok(status) = js_status {
-              match status.downcast::<JsNumber>() {
-                Ok(status) => last.response.status = status.value() as u16,
-                Err(err) => warn!("Response status is not a number - {}", err)
-              }
+          if let Ok(status) = js_status {
+            match status.downcast::<JsNumber>() {
+              Ok(status) => last.response.status = status.value() as u16,
+              Err(err) => warn!("Response status is not a number - {}", err)
             }
-            if let Ok(header_props) = js_header_props {
-              last.response.headers = Some(header_props)
-            }
+          }
+          if let Ok(header_props) = js_header_props {
+            last.response.headers = Some(header_props)
+          }
 
-            if let Some(body) = js_body {
-              match process_body(body, last.response.content_type_enum(), &mut last.response.matching_rules,
-                &mut last.response.generators) {
-                Ok(body) => last.response.body = body,
-                Err(err) => panic!(err)
-              }
+          if let Some(body) = js_body {
+            match process_body(body, last.response.content_type_enum(), &mut last.response.matching_rules,
+              &mut last.response.generators) {
+              Ok(body) => last.response.body = body,
+              Err(err) => panic!(err)
             }
+          }
+          Ok(())
+        } else if pact.interactions.is_empty() {
+          Err("You need to define a new interaction with the uponReceiving method before you can define a new response with the willRespondWith method")
+        } else {
+          Ok(())
         }
-      }
+      };
 
-      Ok(cx.undefined().upcast())
+      match result {
+        Ok(_) => Ok(cx.undefined().upcast()),
+        Err(message) => cx.throw_error(message)
+      }
+    }
+
+    method addResponseBinaryFile(mut cx) {
+      let response = cx.argument::<JsObject>(0)?;
+      let content_type = cx.argument::<JsString>(1)?;
+      let file_path = cx.argument::<JsString>(2)?;
+
+      let js_status = response.get(&mut cx, "status");
+      let js_header_props = get_headers(&mut cx, response);
+
+      let mut this = cx.this();
+
+      let result = {
+        let guard = cx.lock();
+        let mut pact = this.borrow_mut(&guard);
+
+        if let Some(last) = pact.interactions.last_mut() {
+          if let Ok(status) = js_status {
+            match status.downcast::<JsNumber>() {
+              Ok(status) => last.response.status = status.value() as u16,
+              Err(err) => warn!("Response status is not a number - {}", err)
+            }
+          }
+          if let Ok(header_props) = js_header_props {
+            last.response.headers = Some(header_props)
+          }
+
+          match load_file(&file_path.value()) {
+            Ok(body) => {
+              last.response.body = body;
+              last.response.matching_rules.add_category("body").add_rule("$", MatchingRule::ContentType(content_type.value()), &RuleLogic::And);
+              if !last.response.has_header(&"Content-Type".to_string()) {
+                match last.response.headers {
+                  Some(ref mut headers) => {
+                    headers.insert("Content-Type".to_string(), vec!["application/octet-stream".to_string()]);
+                  },
+                  None => {
+                    last.response.headers = Some(hashmap! { "Content-Type".to_string() => vec!["application/octet-stream".to_string()]});
+                  }
+                }
+              }
+              Ok(())
+            },
+            Err(err) => {
+              error!("Could not load file {}: {}", file_path.value(), err);
+              Err(format!("Could not load file {}: {}", file_path.value(), err))
+            }
+          }
+        } else if pact.interactions.is_empty() {
+          Err("You need to define a new interaction with the uponReceiving method before you can define a new response with the withResponseBinaryFile method".to_string())
+        } else {
+          Ok(())
+        }
+      };
+
+      match result {
+        Ok(_) => Ok(cx.undefined().upcast()),
+        Err(message) => cx.throw_error(message)
+      }
     }
 
     method executeTest(mut cx) {
