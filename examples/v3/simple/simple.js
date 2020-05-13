@@ -69,7 +69,7 @@ describe('Pact with IDS', () => {
           })
         }).willRespondWith({
           status: 200,
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/xml" },
           body: eachLike({
             id: integer(1),
             name: string("Project 1"),
