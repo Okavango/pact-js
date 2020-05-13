@@ -32,7 +32,10 @@ describe('Pact with IDS', () => {
           method: 'POST',
           path: '/path',
           query: { from: "today" },
-          headers: { 'Content-Type': "application/xml" },
+          headers: {
+            'Content-Type': "application/xml",
+            Accept: "application/xml"
+          },
           body: new XmlBuilder("1.0", "UTF-8", "ns1:projects").build(el => {
             el.setAttributes({
               id: "1234",
@@ -95,7 +98,10 @@ describe('Pact with IDS', () => {
           const result = provider.executeTest(
             async (mockserver) => fetch( mockserver.url + '/path?from=today', {
               method: 'POST',
-              headers: { "Content-Type": "application/xml" },
+              headers: {
+                'Content-Type': "application/xml",
+                Accept: "application/xml"
+              },
               body: `<?xml version="1.0" encoding="UTF-8"?>
                 <projects foo="bar">
                   <project id="1" name="Project 1" due="2016-02-11T09:46:56.023Z">
