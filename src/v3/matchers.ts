@@ -216,7 +216,21 @@ export function string(str: string) {
  * @param pattern Regular Expression to match
  * @param str Example value
  */
-export function regex(pattern: string, str: string) {
+export function regex(pattern: string, str: string): any
+/**
+ * Value that must match the given regular expression
+ * @param pattern Regular Expression to match
+ * @param str Example value
+ */
+export function regex(pattern: RegExp, str: string): any
+export function regex(pattern: any, str: string): any {
+  if (pattern instanceof RegExp) {
+    return {
+      "pact:matcher:type": "regex",
+      regex: pattern.toString(),
+      value: str,
+    }
+  }
   return {
     "pact:matcher:type": "regex",
     regex: pattern,
@@ -244,7 +258,7 @@ export function timestamp(format: string, example?: string) {
   return {
     "pact:generator:type": "DateTime",
     "pact:matcher:type": "timestamp",
-    timestamp: format,
+    format,
     value: example || PactNative.generate_datetime_string(format),
   }
 }
@@ -258,7 +272,7 @@ export function time(format: string, example?: string) {
   return {
     "pact:generator:type": "Time",
     "pact:matcher:type": "time",
-    time: format,
+    format,
     value: example || PactNative.generate_datetime_string(format),
   }
 }
@@ -270,7 +284,7 @@ export function time(format: string, example?: string) {
  */
 export function date(format: any, example?: string) {
   return {
-    date: format,
+    format,
     "pact:generator:type": "Date",
     "pact:matcher:type": "date",
     value: example || PactNative.generate_datetime_string(format),
