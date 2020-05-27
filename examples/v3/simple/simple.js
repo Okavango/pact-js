@@ -50,9 +50,7 @@ describe('Pact with IDS', () => {
                 Call.appendElement('Param', {
                   name: regex(/exportId|mtpId/, "exportId")
                 }, Param => {
-                  Param.appendElement("ExportId", {}, ExportId => {
-                    ExportId.appendText("1234567890")
-                  })
+                  Param.appendElement("ExportId", {}, regex(/\d+/, "1234567890"));
                 })
               })
             });
@@ -95,7 +93,7 @@ describe('Pact with IDS', () => {
                   <Body>
                     <Call method="getInfo" service="ClinCheckRpcService">
                       <Param name="exportId">
-                        <ExportId>1234567890</ExportId>
+                        <ExportId>123456789</ExportId>
                       </Param>
                     </Call>
                   </Body>
