@@ -37,12 +37,25 @@ describe('Pact with IDS', () => {
             'Content-Type': "application/xml",
             Accept: "application/xml"
           },
-          body: new XmlBuilder("1.0", "UTF-8", "Message").build(el => {
-            el.setAttributes({
+          body: new XmlBuilder("1.0", "UTF-8", "Message").build(Message => {
+            Message.setAttributes({
               type: "Request"
             })
-            el.appendElement('Head', {});
-            el.appendElement('Body', {}, Body => {
+            Message.appendElement('Head', {}, Head => {
+              Head.appendElement('Client', {name: "WebClinCheck"}, Client => {
+                Client.appendElement('Version', {}, regex(/.+/, "2.2.8.2"));
+              })
+              Head.appendElement('Server', {}, Server => {
+                Server.appendElement('Name', {}, "ClinCheck");
+                Server.appendElement('Version', {}, "3.0");
+              })
+              Head.appendElement('Authentication', {}, Authentication => {
+                Authentication.appendElement('User', {}, regex(/.+/, "user_name"));
+                Authentication.appendElement('Password', {}, regex(/.+/, "password"));
+              });
+              Head.appendElement('Token', {}, "1234567323211242144")
+            });
+            Message.appendElement('Body', {}, Body => {
               Body.appendElement('Call', {
                 method: "getInfo",
                 service: "ClinCheckRpcService"
@@ -58,21 +71,19 @@ describe('Pact with IDS', () => {
         }).willRespondWith({
           status: 200,
           headers: { "Content-Type": "application/xml" },
-          body: eachLike({
-            id: integer(1),
-            name: string("Project 1"),
-            due: timestamp(
-              "yyyy-MM-dd'T'HH:mm:ss.SSSX",
-              "2016-02-11T09:46:56.023Z"
-            ),
-            tasks: atLeastOneLike(
-              {
-                id: integer(),
-                name: string("Do the laundry"),
-                done: boolean(true)
-              },
-              4
-            )
+          body: new XmlBuilder("1.0", "UTF-8", "Message").build(Message => {
+            Message.appendElement('Head', {}, Head => {
+              Head.appendElement('Server', {}, Server => {
+                Server.appendElement('Name', {}, regex(/.+/, "server_name"));
+                Server.appendElement('Version', {}, regex(/.+/, "server_version"));
+                Server.appendElement('Timestamp', {}, regex(/.+/, "server_timestamp"));
+              })
+            });
+            Message.appendElement('Body', {}, Body => {
+              Body.appendElement('Result', {state:'SUCCESS'}, Result => {
+                //Result.
+              })
+            })
           })
       })
     });
@@ -89,7 +100,20 @@ describe('Pact with IDS', () => {
               },
               body: `<?xml version="1.0" encoding="UTF-8"?>
                 <Message type="Request">
-                  <Head/>
+                  <Head>
+                    <Client name="WebClinCheck">
+                      <Version>2.2.8.3</Version>
+                    </Client>
+                    <Server>
+                      <Name>ClinCheck</Name>
+                      <Version>3.0</Version>
+                    </Server>
+                    <Authentication>
+                      <User>rmolis</User>
+                      <Password>token_placeholder</Password>
+                    </Authentication>
+                    <Token>1234567323211242144</Token>
+                  </Head>
                   <Body>
                     <Call method="getInfo" service="ClinCheckRpcService">
                       <Param name="exportId">
