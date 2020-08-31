@@ -63,7 +63,7 @@ describe('Pact with IDS', () => {
                 Call.appendElement('Param', {
                   name: regex(/exportId|mtpId/, "exportId")
                 }, Param => {
-                  Param.appendElement("ExportId", {}, regex(/\d+/, "1234567890"));
+                  Param.appendElement("ExportId", {}, regex(/.+/, "1234567890"));
                 })
               })
             });
@@ -77,11 +77,21 @@ describe('Pact with IDS', () => {
                 Server.appendElement('Name', {}, regex(/.+/, "server_name"));
                 Server.appendElement('Version', {}, regex(/.+/, "server_version"));
                 Server.appendElement('Timestamp', {}, regex(/.+/, "server_timestamp"));
-              })
+              });
+              Head.appendElement('Authentication', {}, Authentication => {
+                Authentication.appendElement('User', {}, regex(/.+/, "user_name"));
+                Authentication.appendElement('Password', {}, regex(/.+/, "password"));
+              });
+              Head.appendElement('Token', {age: regex(/\d+/, "28800")}, regex(/.+/, "user_name"));
+              Head.appendElement('RefreshTokenURL', {}, regex(/.+/, "refresh_token_url"));
             });
             Message.appendElement('Body', {}, Body => {
               Body.appendElement('Result', {state:'SUCCESS'}, Result => {
-                //Result.
+                Result.eachLike("Export", {
+                  id: integer(1234567)
+                }, null, {
+                  Preferences: integer(1234567)
+                })
               })
             })
           })
@@ -131,6 +141,7 @@ describe('Pact with IDS', () => {
         // }
         expect(response).to.not.be.undefined;
         expect(response.status).to.be.equal(200);
+        //console.log(await response.text());
     });
   });
 
