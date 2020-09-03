@@ -34,7 +34,7 @@ describe('IDS GetInfo', () => {
           path: '/path',
           query: { from: "today" },
           headers: {
-            'Content-Type': "application/xml",
+            'Content-Type': "text/xml",
             Accept: "application/xml"
           },
           body: new XmlBuilder("1.0", "UTF-8", "Message").build(Message => {
@@ -117,7 +117,7 @@ describe('IDS GetInfo', () => {
             async (mockserver) => fetch( mockserver.url + '/path?from=today', {
               method: 'POST',
               headers: {
-                'Content-Type': "application/xml",
+                'Content-Type': "text/xml",
                 Accept: "application/xml"
               },
               body: `<?xml version="1.0" encoding="UTF-8"?>
