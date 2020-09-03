@@ -22,9 +22,9 @@ const provider = new PactV3({
   logLevel: 'DEBUG'
 });
 
-describe('Pact with IDS', () => {
+describe('IDS GetInfo', () => {
 
-  describe('getInfo', () => {
+  describe('STP', () => {
     beforeEach(() => {
       provider
         .given("i have a list of projects")
@@ -89,8 +89,20 @@ describe('Pact with IDS', () => {
               Body.appendElement('Result', {state:'SUCCESS'}, Result => {
                 Result.eachLike("Export", {
                   id: integer(1234567)
-                }, null, {
-                  Preferences: integer(1234567)
+                }, Export => {
+                  Export.appendElement('Preferences', {}, Preferences => {
+                    Preferences.appendElement('ToothNumberingSystem', {}, regex(/Universal|Palmer|FDI/, "Universal"))
+                  });
+                });
+                Result.eachLike("CommentsGroup", {
+                  id: integer(1234567),
+                  doctorComment: regex(/true|false/, "true")
+                });
+                Result.appendElement("Doctor", {}, Doctor => {
+                  Doctor.appendElement("ClinicianID", {}, regex(/.+/, "doctor_id"));
+                  Doctor.appendElement("LastName", {}, regex(/.+/, "doctor_last_name"));
+                  Doctor.appendElement("FirstName", {}, regex(/.+/, "doctor_first_name"));
+                  Doctor.appendElement("SmileViewProEnabled", {}, regex(/true|false/, "true"));
                 })
               })
             })
@@ -141,7 +153,7 @@ describe('Pact with IDS', () => {
         // }
         expect(response).to.not.be.undefined;
         expect(response.status).to.be.equal(200);
-        //console.log(await response.text());
+        console.log(await response.text());
     });
   });
 
